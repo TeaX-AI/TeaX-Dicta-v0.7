@@ -1,0 +1,228 @@
+name: Train TeaX-Dicta v0.7
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'train.py'
+      - '.github/workflows/train.yml'
+
+concurrency:
+  group: teax-dicta-train-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MODEL_NAME: TeaX-Dicta-v0.7
+  HF_HOME: ${{ github.workspace }}/.hf_cache
+  HF_DATASETS_CACHE: ${{ github.workspace }}/.hf_cache/datasets
+  OMP_NUM_THREADS: 4
+  MKL_NUM_THREADS: 4
+  PYTHONUNBUFFERED: 1
+  TOKENIZERS_PARALLELISM: 'false'
+  ARTIFACT_RETENTION: 30
+
+jobs:
+  stage_a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-tinystories-${{ hashFiles('train.py') }}
+          restore-keys: hf-tinystories-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir datasets transformers pyyaml tqdm numpy
+
+      - name: Train stage_a
+        run: |
+          python train.py \
+            --stage stage_a \
+            --dataset roneneldan/TinyStories \
+            --output_dir ./outputs/teax-dicta-v0.7/stage_a \
+            --max_steps 2000 \
+            --max_samples 200000
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_a
+          path: ./outputs/teax-dicta-v0.7/stage_a
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: warn
+
+  stage_b:
+    needs: stage_a
+    if: always() && needs.stage_a.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-sharegpt-${{ hashFiles('train.py') }}
+          restore-keys: hf-sharegpt-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir datasets transformers pyyaml tqdm numpy
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_a
+          path: ./inputs/stage_a
+
+      - name: Train stage_b
+        run: |
+          python train.py \
+            --stage stage_b \
+            --dataset anon8231489123/ShareGPT_Vicuna_unfiltered \
+            --output_dir ./outputs/teax-dicta-v0.7/stage_b \
+            --resume_from ./inputs/stage_a/model.pt \
+            --max_steps 2000 \
+            --max_samples 100000
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_b
+          path: ./outputs/teax-dicta-v0.7/stage_b
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: warn
+
+  stage_c:
+    needs: stage_b
+    if: always() && needs.stage_b.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-codefeedback-${{ hashFiles('train.py') }}
+          restore-keys: hf-codefeedback-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir datasets transformers pyyaml tqdm numpy
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_b
+          path: ./inputs/stage_b
+
+      - name: Train stage_c
+        run: |
+          python train.py \
+            --stage stage_c \
+            --dataset m-a-p/CodeFeedback-Filtered-Instruction \
+            --output_dir ./outputs/teax-dicta-v0.7/stage_c \
+            --resume_from ./inputs/stage_b/model.pt \
+            --max_steps 2000 \
+            --max_samples 100000
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_c
+          path: ./outputs/teax-dicta-v0.7/stage_c
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: warn
+
+  stage_d:
+    needs: stage_c
+    if: always() && needs.stage_c.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-openhermes-${{ hashFiles('train.py') }}
+          restore-keys: hf-openhermes-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir datasets transformers pyyaml tqdm numpy
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_c
+          path: ./inputs/stage_c
+
+      - name: Train stage_d
+        run: |
+          python train.py \
+            --stage stage_d \
+            --dataset teknium/OpenHermes-2.5 \
+            --output_dir ./outputs/teax-dicta-v0.7/stage_d \
+            --resume_from ./inputs/stage_c/model.pt \
+            --max_steps 2000 \
+            --max_samples 100000
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teax-dicta-v0.7-ckpt-stage_d
+          path: ./outputs/teax-dicta-v0.7/stage_d
+          retention-days: ${{ env.ARTIFACT_RETENTION }}
+          if-no-files-found: warn

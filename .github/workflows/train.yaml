@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'train.py'
+      - 'requirements.txt'
       - '.github/workflows/train.yml'
 
 concurrency:
@@ -35,14 +36,8 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - uses: actions/cache@v4
-        with:
           path: ${{ env.HF_HOME }}
-          key: hf-tinystories-${{ hashFiles('train.py') }}
+          key: hf-tinystories-${{ hashFiles('requirements.txt') }}
           restore-keys: hf-tinystories-
 
       - name: Install deps
@@ -82,14 +77,8 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - uses: actions/cache@v4
-        with:
           path: ${{ env.HF_HOME }}
-          key: hf-sharegpt-${{ hashFiles('train.py') }}
+          key: hf-sharegpt-${{ hashFiles('requirements.txt') }}
           restore-keys: hf-sharegpt-
 
       - name: Install deps
@@ -135,14 +124,8 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - uses: actions/cache@v4
-        with:
           path: ${{ env.HF_HOME }}
-          key: hf-codefeedback-${{ hashFiles('train.py') }}
+          key: hf-codefeedback-${{ hashFiles('requirements.txt') }}
           restore-keys: hf-codefeedback-
 
       - name: Install deps
@@ -188,14 +171,8 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('train.py') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - uses: actions/cache@v4
-        with:
           path: ${{ env.HF_HOME }}
-          key: hf-openhermes-${{ hashFiles('train.py') }}
+          key: hf-openhermes-${{ hashFiles('requirements.txt') }}
           restore-keys: hf-openhermes-
 
       - name: Install deps

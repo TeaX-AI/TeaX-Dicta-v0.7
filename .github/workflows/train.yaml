@@ -52,8 +52,8 @@ jobs:
             --stage stage_a \
             --dataset roneneldan/TinyStories \
             --output_dir ./outputs/teax-dicta-v0.7/stage_a \
-            --max_steps 2000 \
-            --max_samples 200000
+            --epochs 2 \
+            --max_samples 50000
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -65,7 +65,6 @@ jobs:
 
   stage_b:
     needs: stage_a
-    if: always() && needs.stage_a.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -99,8 +98,8 @@ jobs:
             --dataset anon8231489123/ShareGPT_Vicuna_unfiltered \
             --output_dir ./outputs/teax-dicta-v0.7/stage_b \
             --resume_from ./inputs/stage_a/model.pt \
-            --max_steps 2000 \
-            --max_samples 100000
+            --epochs 2 \
+            --max_samples 50000
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -112,7 +111,6 @@ jobs:
 
   stage_c:
     needs: stage_b
-    if: always() && needs.stage_b.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -146,8 +144,8 @@ jobs:
             --dataset m-a-p/CodeFeedback-Filtered-Instruction \
             --output_dir ./outputs/teax-dicta-v0.7/stage_c \
             --resume_from ./inputs/stage_b/model.pt \
-            --max_steps 2000 \
-            --max_samples 100000
+            --epochs 2 \
+            --max_samples 50000
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -159,7 +157,6 @@ jobs:
 
   stage_d:
     needs: stage_c
-    if: always() && needs.stage_c.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -193,8 +190,8 @@ jobs:
             --dataset teknium/OpenHermes-2.5 \
             --output_dir ./outputs/teax-dicta-v0.7/stage_d \
             --resume_from ./inputs/stage_c/model.pt \
-            --max_steps 2000 \
-            --max_samples 100000
+            --epochs 2 \
+            --max_samples 50000
 
       - uses: actions/upload-artifact@v4
         if: always()

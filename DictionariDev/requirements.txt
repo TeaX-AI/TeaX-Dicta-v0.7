@@ -1,0 +1,8 @@
+torch
+numpy
+datasets
+transformers
+pyyaml
+tqdm
+gguf
+bitsandbytes

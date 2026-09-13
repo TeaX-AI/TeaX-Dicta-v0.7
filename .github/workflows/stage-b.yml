@@ -23,6 +23,7 @@ jobs:
 
       - name: Install deps
         run: |
+          cd DictionariDev
           pip install --upgrade pip
           pip install --no-cache-dir torch
           pip install --no-cache-dir -r requirements.txt
@@ -34,17 +35,33 @@ jobs:
         run: |
           mkdir -p inputs/prev
           if gh release view ckpt-stage-b > /dev/null 2>&1; then
-            gh release download ckpt-stage-b \
-              --pattern "model.pt" \
-              --pattern "meta.json" \
-              --dir inputs/prev \
-              --clobber
+            TARGET_RELEASE="ckpt-stage-b"
           elif gh release view ckpt-stage-a > /dev/null 2>&1; then
-            gh release download ckpt-stage-a \
-              --pattern "model.pt" \
-              --pattern "meta.json" \
-              --dir inputs/prev \
-              --clobber
+            TARGET_RELEASE="ckpt-stage-a"
+          else
+            TARGET_RELEASE=""
+          fi
+          if [ -n "$TARGET_RELEASE" ]; then
+            for i in 1 2 3 4 5; do
+              echo "[download] attempt $i/5 from $TARGET_RELEASE"
+              if gh release download "$TARGET_RELEASE" \
+                --pattern "model.pt" \
+                --pattern "meta.json" \
+                --pattern "dictionari-model.json" \
+                --dir inputs/prev \
+                --clobber; then
+                echo "[download] success"
+                break
+              fi
+              if [ "$i" -eq 5 ]; then
+                echo "[download] all 5 attempts failed, aborting job"
+                exit 1
+              fi
+              echo "[download] failed, waiting 15s before retry"
+              sleep 15
+            done
+          else
+            echo "[download] no release found, first run"
           fi
           if [ -f inputs/prev/model.pt ]; then
             echo "found=true" >> $GITHUB_OUTPUT
@@ -54,14 +71,20 @@ jobs:
 
       - name: Train stage-b
         run: |
+          cd DictionariDev
           EXTRA=""
           if [ "${{ steps.ckpt.outputs.found }}" = "true" ]; then
-            EXTRA="--resume_from ./inputs/prev/model.pt"
+            EXTRA="--resume_from ../inputs/prev/model.pt"
           fi
-          python train.py \
+          python Train.py \
             --stage stage_b \
             --dataset anon8231489123/ShareGPT_Vicuna_unfiltered \
-            --output_dir ./outputs/teax-dicta-v0.7/stage_b \
+            --output_dir ../outputs/stage_b \
+            --d_model 640 \
+            --layer_experts "12,24,48" \
+            --hidden_mult 3 \
+            --top_k 2 \
+            --epochs 2 \
             --max_minutes 320 \
             $EXTRA
 
@@ -70,7 +93,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/teax-dicta-v0.7/stage_b
+          DIR=./outputs/stage_b
           if [ ! -f "$DIR/model.pt" ]; then
             echo "no checkpoint produced"
             exit 0
@@ -82,19 +105,22 @@ jobs:
               --target ${{ github.ref_name }}
           gh release upload ckpt-stage-b "$DIR/model.pt" --clobber
           gh release upload ckpt-stage-b "$DIR/meta.json" --clobber
+          gh release upload ckpt-stage-b "$DIR/dictionari-model.json" --clobber
 
       - name: Trigger next
         if: success()
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/teax-dicta-v0.7/stage_b
+          DIR=./outputs/stage_b
           DONE="false"
           if [ -f "$DIR/meta.json" ]; then
             DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           fi
           if [ "$DONE" = "true" ]; then
+            echo "stage-b complete, triggering stage-c"
             gh workflow run stage-c.yml --ref ${{ github.ref_name }}
           else
+            echo "stage-b incomplete, re-triggering stage-b"
             gh workflow run stage-b.yml --ref ${{ github.ref_name }}
           fi

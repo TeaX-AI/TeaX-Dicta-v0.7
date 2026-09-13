@@ -18,6 +18,7 @@ jobs:
 
       - name: Install deps
         run: |
+          cd DictionariDev
           pip install --upgrade pip
           pip install --no-cache-dir torch
           pip install --no-cache-dir numpy gguf
@@ -27,28 +28,51 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           mkdir -p inputs/stage_d
-          gh release download ckpt-stage-d \
-            --pattern "model.pt" \
-            --pattern "meta.json" \
-            --dir inputs/stage_d \
-            --clobber
+          for i in 1 2 3 4 5; do
+            echo "[download] attempt $i/5"
+            if gh release download ckpt-stage-d \
+              --pattern "model.pt" \
+              --pattern "meta.json" \
+              --dir inputs/stage_d \
+              --clobber; then
+              echo "[download] success"
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "[download] all 5 attempts failed, aborting job"
+              exit 1
+            fi
+            echo "[download] failed, waiting 15s before retry"
+            sleep 15
+          done
 
-      - name: Convert to GGUF
+      - name: Convert pt to dim
         run: |
+          cd DictionariDev
+          python convert_to_dim.py \
+            --input ../inputs/stage_d/model.pt \
+            --meta ../inputs/stage_d/meta.json \
+            --output ../outputs/teax-dicta-v0.7.dim \
+            --with-model-roles
+
+      - name: Convert dim to gguf
+        run: |
+          cd DictionariDev
           python convert_to_gguf.py \
-            --input inputs/stage_d/model.pt \
-            --meta inputs/stage_d/meta.json \
-            --output teax-dicta-v0.7.gguf
+            --dim ../outputs/teax-dicta-v0.7.dim \
+            --output ../outputs/teax-dicta-v0.7.gguf
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          cd ./outputs
           TAG="teax-dicta-v0.7"
           gh release view "$TAG" > /dev/null 2>&1 || \
             gh release create "$TAG" \
               --title "TeaX-Dicta v0.7" \
               --notes "Auto-built release from stage-d checkpoint." \
               --target ${{ github.ref_name }}
+          gh release upload "$TAG" teax-dicta-v0.7.dim --clobber
           gh release upload "$TAG" teax-dicta-v0.7.gguf --clobber
-          gh release upload "$TAG" teax-dicta-v0.7.config.json --clobber
+          gh release upload "$TAG" teax-dicta-v0.7.gguf.config.json --clobber

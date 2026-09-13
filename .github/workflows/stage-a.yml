@@ -23,6 +23,7 @@ jobs:
 
       - name: Install deps
         run: |
+          cd DictionariDev
           pip install --upgrade pip
           pip install --no-cache-dir torch
           pip install --no-cache-dir -r requirements.txt
@@ -34,11 +35,26 @@ jobs:
         run: |
           mkdir -p inputs/prev
           if gh release view ckpt-stage-a > /dev/null 2>&1; then
-            gh release download ckpt-stage-a \
-              --pattern "model.pt" \
-              --pattern "meta.json" \
-              --dir inputs/prev \
-              --clobber
+            for i in 1 2 3 4 5; do
+              echo "[download] attempt $i/5"
+              if gh release download ckpt-stage-a \
+                --pattern "model.pt" \
+                --pattern "meta.json" \
+                --pattern "dictionari-model.json" \
+                --dir inputs/prev \
+                --clobber; then
+                echo "[download] success"
+                break
+              fi
+              if [ "$i" -eq 5 ]; then
+                echo "[download] all 5 attempts failed, aborting job"
+                exit 1
+              fi
+              echo "[download] failed, waiting 15s before retry"
+              sleep 15
+            done
+          else
+            echo "[download] release ckpt-stage-a does not exist, first run"
           fi
           if [ -f inputs/prev/model.pt ]; then
             echo "found=true" >> $GITHUB_OUTPUT
@@ -48,14 +64,20 @@ jobs:
 
       - name: Train stage-a
         run: |
+          cd DictionariDev
           EXTRA=""
           if [ "${{ steps.ckpt.outputs.found }}" = "true" ]; then
-            EXTRA="--resume_from ./inputs/prev/model.pt"
+            EXTRA="--resume_from ../inputs/prev/model.pt"
           fi
-          python train.py \
+          python Train.py \
             --stage stage_a \
             --dataset roneneldan/TinyStories \
-            --output_dir ./outputs/teax-dicta-v0.7/stage_a \
+            --output_dir ../outputs/stage_a \
+            --d_model 640 \
+            --layer_experts "12,24,48" \
+            --hidden_mult 3 \
+            --top_k 2 \
+            --epochs 2 \
             --max_minutes 320 \
             $EXTRA
 
@@ -64,7 +86,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/teax-dicta-v0.7/stage_a
+          DIR=./outputs/stage_a
           if [ ! -f "$DIR/model.pt" ]; then
             echo "no checkpoint produced"
             exit 0
@@ -76,19 +98,22 @@ jobs:
               --target ${{ github.ref_name }}
           gh release upload ckpt-stage-a "$DIR/model.pt" --clobber
           gh release upload ckpt-stage-a "$DIR/meta.json" --clobber
+          gh release upload ckpt-stage-a "$DIR/dictionari-model.json" --clobber
 
       - name: Trigger next
         if: success()
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/teax-dicta-v0.7/stage_a
+          DIR=./outputs/stage_a
           DONE="false"
           if [ -f "$DIR/meta.json" ]; then
             DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           fi
           if [ "$DONE" = "true" ]; then
+            echo "stage-a complete, triggering stage-b"
             gh workflow run stage-b.yml --ref ${{ github.ref_name }}
           else
+            echo "stage-a incomplete, re-triggering stage-a"
             gh workflow run stage-a.yml --ref ${{ github.ref_name }}
           fi

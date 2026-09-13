@@ -89,6 +89,10 @@ class TeaXDictaV07(nn.Module):
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
+        elif isinstance(module, nn.Conv1d):
+            nn.init.normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def _balance_loss(self, probs):
         B, L, E = probs.shape
@@ -188,14 +192,14 @@ def get_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
-    p.add_argument("--aux_weight", type=float, default=0.1)
+    p.add_argument("--aux_weight", type=float, default=0.5)
     p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--max_minutes", type=int, default=0)
     p.add_argument("--d_model", type=int, default=256)
     p.add_argument("--n_layers", type=int, default=2)
     p.add_argument("--n_experts", type=int, default=8)
     p.add_argument("--tokenizer", default="gpt2")
-    p.add_argument("--log_every", type=int, default=20)
+    p.add_argument("--log_every", type=int, default=10)
     p.add_argument("--save_every", type=int, default=500)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()

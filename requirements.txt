@@ -5,3 +5,4 @@ pyyaml
 tqdm
 numpy
 gguf
+bitsandbytes

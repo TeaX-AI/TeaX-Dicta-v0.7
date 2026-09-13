@@ -12,7 +12,7 @@ def main():
     p.add_argument("--output", required=True)
     args = p.parse_args()
 
-    state = torch.load(args.input, map_location="cpu")
+    state = torch.load(args.input, map_location="cpu", mmap=True)
     if isinstance(state, dict) and "model" in state:
         state = state["model"]
 
@@ -26,14 +26,22 @@ def main():
     writer = GGUFWriter(args.output, arch="teax-dicta")
     writer.add_name("TeaX-Dicta-v0.7")
     writer.add_description("TeaX-Dicta v0.7 converted from PyTorch")
+
     if meta:
-        writer.add_uint32("teax.d_model", int(meta.get("d_model", 0)))
-        writer.add_uint32("teax.n_layers", int(meta.get("n_layers", 0)))
-        writer.add_uint32("teax.n_experts", int(meta.get("n_experts", 0)))
-        writer.add_uint32("teax.seq_len", int(meta.get("seq_len", 0)))
-        writer.add_uint32("teax.vocab_size", int(meta.get("vocab_size", 0)))
-        writer.add_uint32("teax.global_step", int(meta.get("global_step", 0)))
-        writer.add_uint32("teax.completed_epochs", int(meta.get("completed_epochs", 0)))
+        if "d_model" in meta:
+            writer.add_uint32("teax.d_model", int(meta["d_model"]))
+        if "layer_experts" in meta:
+            le = meta["layer_experts"]
+            if isinstance(le, list):
+                writer.add_array("teax.layer_experts", [str(x) for x in le])
+        if "seq_len" in meta:
+            writer.add_uint32("teax.seq_len", int(meta["seq_len"]))
+        if "vocab_size" in meta:
+            writer.add_uint32("teax.vocab_size", int(meta["vocab_size"]))
+        if "global_step" in meta:
+            writer.add_uint32("teax.global_step", int(meta["global_step"]))
+        if "completed_epochs" in meta:
+            writer.add_uint32("teax.completed_epochs", int(meta["completed_epochs"]))
 
     for name, tensor in state.items():
         if not isinstance(tensor, torch.Tensor):
@@ -50,6 +58,8 @@ def main():
             arr = arr.astype(np.float32)
             qtype = GGMLQuantizationType.F32
         writer.add_tensor(name, arr, raw_dtype=qtype)
+        del arr
+        del tensor
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()

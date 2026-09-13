@@ -9,12 +9,12 @@ concurrency:
 
 jobs:
   train:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -24,7 +24,7 @@ jobs:
       - name: Install deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir torch
           pip install --no-cache-dir -r requirements.txt
 
       - name: Download previous checkpoint
@@ -81,7 +81,7 @@ jobs:
             gh release create ckpt-stage-b \
               --title "stage-b checkpoint" \
               --notes "auto checkpoint" \
-              --target main
+              --target ${{ github.ref_name }}
           gh release upload ckpt-stage-b "$DIR/model.pt" --clobber
           gh release upload ckpt-stage-b "$DIR/meta.json" --clobber
 
@@ -96,9 +96,7 @@ jobs:
             DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           fi
           if [ "$DONE" = "true" ]; then
-            echo "stage-b complete, triggering stage-c"
-            gh workflow run stage-c.yml --ref main
+            gh workflow run stage-c.yml --ref ${{ github.ref_name }}
           else
-            echo "stage-b incomplete, re-triggering stage-b"
-            gh workflow run stage-b.yml --ref main
+            gh workflow run stage-b.yml --ref ${{ github.ref_name }}
           fi

@@ -5,12 +5,12 @@ on:
 
 jobs:
   convert:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -19,7 +19,7 @@ jobs:
       - name: Install deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir torch
           pip install --no-cache-dir -r requirements.txt
 
       - name: Download stage-d checkpoint
@@ -49,5 +49,5 @@ jobs:
             gh release create "$TAG" \
               --title "TeaX-Dicta v0.7" \
               --notes "Auto-built release from stage-d checkpoint." \
-              --target main
+              --target ${{ github.ref_name }}
           gh release upload "$TAG" teax-dicta-v0.7.gguf --clobber

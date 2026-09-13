@@ -28,19 +28,6 @@ class CausalMix(nn.Module):
         return x + torch.sigmoid(self.gate(x)) * y
 
 
-class DictionaryScheduler(nn.Module):
-    def __init__(self, d_in, n_experts, hidden=64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_in, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, n_experts),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
 class SharedTrunk(nn.Module):
     def __init__(self, d, n_blocks=2):
         super().__init__()
@@ -52,30 +39,116 @@ class SharedTrunk(nn.Module):
         return x
 
 
-class ExpertHead(nn.Module):
-    def __init__(self, d, hidden_mult=4):
+class HierarchicalDictLayer(nn.Module):
+    def __init__(self, d, n_experts, n_parents=None, children_per_parent=2,
+                 hidden_mult=4, top_k=2, trunk_blocks=2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d, d * hidden_mult),
-            nn.GELU(),
-            nn.Linear(d * hidden_mult, d),
-        )
+        self.d = d
+        self.n_experts = n_experts
+        self.n_parents = n_parents
+        self.children_per_parent = children_per_parent
+        self.top_k = top_k
+        hidden = d * hidden_mult
 
-    def forward(self, x):
-        return self.net(x)
+        self.router = nn.Linear(d, n_experts)
+        self.W1 = nn.Parameter(torch.randn(n_experts, d, hidden) * 0.02)
+        self.b1 = nn.Parameter(torch.zeros(n_experts, hidden))
+        self.W2 = nn.Parameter(torch.randn(n_experts, hidden, d) * 0.02)
+        self.b2 = nn.Parameter(torch.zeros(n_experts, d))
+        self.trunk = SharedTrunk(d, trunk_blocks)
+
+        if n_parents is not None:
+            assert n_experts == n_parents * children_per_parent
+            child_to_parent = torch.arange(n_experts) // children_per_parent
+            self.register_buffer("child_to_parent", child_to_parent)
+        else:
+            self.child_to_parent = None
+
+    def balance_loss(self, probs):
+        B, L, E = probs.shape
+        flat = probs.reshape(-1, E)
+        p = flat.mean(dim=0)
+        f = torch.bincount(flat.argmax(dim=-1), minlength=E).float() / flat.size(0)
+        return E * (f * p).sum()
+
+    def forward(self, x, parent_probs=None):
+        B, L, D = x.shape
+        x_flat = x.reshape(B * L, D)
+
+        logits = self.router(x_flat)
+
+        if parent_probs is not None and self.child_to_parent is not None:
+            pp = parent_probs.reshape(B * L, -1)
+            if self.training:
+                gating = pp
+            else:
+                gating = F.one_hot(pp.argmax(dim=-1), num_classes=self.n_parents).float()
+            parent_prob_per_expert = gating[:, self.child_to_parent]
+            logits = logits + torch.log(parent_prob_per_expert + 1e-6)
+
+        probs = F.softmax(logits, dim=-1)
+        topk_weights, topk_indices = torch.topk(probs, k=self.top_k, dim=-1)
+        topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        flat_indices = topk_indices.reshape(-1)
+        flat_weights = topk_weights.reshape(-1)
+        token_ids = torch.arange(B * L, device=x.device).repeat_interleave(self.top_k)
+
+        sorted_experts, sort_order = torch.sort(flat_indices)
+        sorted_token_ids = token_ids[sort_order]
+        sorted_weights = flat_weights[sort_order]
+        sorted_x = x_flat[sorted_token_ids]
+
+        expert_counts = torch.bincount(sorted_experts, minlength=self.n_experts)
+
+        sorted_output = torch.zeros_like(sorted_x)
+        offset = 0
+        for e in range(self.n_experts):
+            count = int(expert_counts[e].item())
+            if count == 0:
+                continue
+            expert_tokens = sorted_x[offset:offset + count]
+            h = expert_tokens @ self.W1[e] + self.b1[e]
+            h = F.gelu(h)
+            out = h @ self.W2[e] + self.b2[e]
+            w = sorted_weights[offset:offset + count].unsqueeze(-1)
+            sorted_output[offset:offset + count] = out * w
+            offset += count
+
+        output = torch.zeros(B * L, D, device=x.device)
+        output.index_add_(0, sorted_token_ids, sorted_output)
+        output = output.reshape(B, L, D)
+
+        x = self.trunk(x + output)
+        probs = probs.reshape(B, L, self.n_experts)
+        return x, probs
 
 
 class TeaXDictaV07(nn.Module):
-    def __init__(self, vocab_size, d=256, n_layers=2, n_experts=8, max_seq_len=256, trunk_blocks=2):
+    def __init__(self, vocab_size, d=512, layer_experts=(16, 32, 64),
+                 children_per_parent=2, hidden_mult=4, top_k=2,
+                 max_seq_len=256, trunk_blocks=2):
         super().__init__()
-        self.n_layers = n_layers
-        self.n_experts = n_experts
+        self.layer_experts = list(layer_experts)
+        self.children_per_parent = children_per_parent
 
         self.token_emb = nn.Embedding(vocab_size, d)
         self.pos_emb = nn.Embedding(max_seq_len, d)
-        self.schedulers = nn.ModuleList([DictionaryScheduler(d, n_experts) for _ in range(n_layers)])
-        self.trunks = nn.ModuleList([SharedTrunk(d, trunk_blocks) for _ in range(n_layers)])
-        self.experts = nn.ModuleList([ExpertHead(d) for _ in range(n_experts)])
+
+        layers = []
+        prev_n = None
+        for n in self.layer_experts:
+            layers.append(HierarchicalDictLayer(
+                d, n,
+                n_parents=prev_n,
+                children_per_parent=children_per_parent,
+                hidden_mult=hidden_mult,
+                top_k=top_k,
+                trunk_blocks=trunk_blocks,
+            ))
+            prev_n = n
+        self.layers = nn.ModuleList(layers)
+
         self.norm = nn.LayerNorm(d)
         self.lm_head = nn.Linear(d, vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight
@@ -94,27 +167,17 @@ class TeaXDictaV07(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def _balance_loss(self, probs):
-        B, L, E = probs.shape
-        flat = probs.reshape(-1, E)
-        p = flat.mean(dim=0)
-        idx = flat.argmax(dim=-1)
-        f = torch.bincount(idx, minlength=E).float() / idx.numel()
-        return E * (f * p).sum()
-
     def forward(self, input_ids, labels=None):
         B, L = input_ids.shape
         pos = torch.arange(L, device=input_ids.device).unsqueeze(0)
         x = self.token_emb(input_ids) + self.pos_emb(pos)
 
         aux_total = 0.0
-        for sched, trunk in zip(self.schedulers, self.trunks):
-            probs = F.softmax(sched(x), dim=-1)
-            expert_out = 0.0
-            for i, expert in enumerate(self.experts):
-                expert_out = expert_out + probs[..., i:i + 1] * expert(x)
-            x = trunk(x + expert_out)
-            aux_total = aux_total + self._balance_loss(probs)
+        parent_probs = None
+        for layer in self.layers:
+            x, probs = layer(x, parent_probs=parent_probs)
+            aux_total = aux_total + layer.balance_loss(probs)
+            parent_probs = probs
 
         logits = self.lm_head(self.norm(x))
 
@@ -127,7 +190,7 @@ class TeaXDictaV07(nn.Module):
                 shift_labels.reshape(-1),
                 ignore_index=-100,
             )
-        return logits, loss, aux_total / max(len(self.schedulers), 1)
+        return logits, loss, aux_total / max(len(self.layers), 1)
 
 
 def extract_text(example):
@@ -178,6 +241,10 @@ def build_dataset(dataset_name, tokenizer, seq_len, max_samples=0):
     return ds
 
 
+def parse_int_tuple(s):
+    return tuple(int(x.strip()) for x in s.split(",") if x.strip())
+
+
 def get_args():
     p = argparse.ArgumentParser()
     p.add_argument("--stage", required=True)
@@ -195,9 +262,11 @@ def get_args():
     p.add_argument("--aux_weight", type=float, default=0.5)
     p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--max_minutes", type=int, default=0)
-    p.add_argument("--d_model", type=int, default=256)
-    p.add_argument("--n_layers", type=int, default=2)
-    p.add_argument("--n_experts", type=int, default=8)
+    p.add_argument("--d_model", type=int, default=512)
+    p.add_argument("--layer_experts", type=str, default="16,32,64")
+    p.add_argument("--children_per_parent", type=int, default=2)
+    p.add_argument("--hidden_mult", type=int, default=4)
+    p.add_argument("--top_k", type=int, default=2)
     p.add_argument("--tokenizer", default="gpt2")
     p.add_argument("--log_every", type=int, default=10)
     p.add_argument("--save_every", type=int, default=500)
@@ -241,6 +310,25 @@ def make_loader(ds, args, epoch):
     )
 
 
+def build_optimizer(model, args):
+    try:
+        import bitsandbytes as bnb
+        opt = bnb.optim.AdamW8bit(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+        print("[opt] using 8-bit AdamW", flush=True)
+        return opt
+    except Exception as e:
+        print(f"[opt] bitsandbytes unavailable ({e}), falling back to fp32 AdamW", flush=True)
+        return torch.optim.AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+
+
 def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
     path = os.path.join(args.output_dir, "model.pt")
     torch.save({
@@ -260,8 +348,8 @@ def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
         "epochs": args.epochs,
         "complete": completed_epochs >= args.epochs,
         "d_model": args.d_model,
-        "n_layers": args.n_layers,
-        "n_experts": args.n_experts,
+        "layer_experts": list(model.layer_experts),
+        "children_per_parent": model.children_per_parent,
         "seq_len": args.seq_len,
         "vocab_size": model.token_emb.num_embeddings,
     }
@@ -277,7 +365,8 @@ def try_resume(model, args):
 
     state = torch.load(src, map_location="cpu")
     if isinstance(state, dict) and "model" in state:
-        model.load_state_dict(state["model"], strict=False)
+        missing, unexpected = model.load_state_dict(state["model"], strict=False)
+        print(f"[resume] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
         gs = int(state.get("global_step", 0))
         ep = int(state.get("completed_epochs", 0))
         es = int(state.get("epoch_step", 0))
@@ -325,13 +414,17 @@ def main():
     warmup_steps = max(int(total_steps * args.warmup_ratio), 1)
     print(f"[plan] steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} warmup={warmup_steps}", flush=True)
 
+    layer_experts = parse_int_tuple(args.layer_experts)
     model = TeaXDictaV07(
         vocab_size=len(tokenizer),
         d=args.d_model,
-        n_layers=args.n_layers,
-        n_experts=args.n_experts,
+        layer_experts=layer_experts,
+        children_per_parent=args.children_per_parent,
+        hidden_mult=args.hidden_mult,
+        top_k=args.top_k,
         max_seq_len=args.seq_len,
     )
+    print(f"[model] layer_experts={list(layer_experts)} total_experts={sum(layer_experts)} top_k={args.top_k}", flush=True)
     print(f"[model] params = {sum(p.numel() for p in model.parameters())/1e6:.2f}M", flush=True)
 
     start_epoch, start_epoch_step, global_step, done = try_resume(model, args)
@@ -340,7 +433,7 @@ def main():
         return
 
     model.train()
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt = build_optimizer(model, args)
     micro = 0
     t0 = time.time()
     train_start = time.time()

@@ -338,6 +338,8 @@ def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
         "epoch_step": epoch_step,
         "global_step": global_step,
         "stage": args.stage,
+        "d_model": args.d_model,
+        "layer_experts": list(model.layer_experts),
     }, path)
     meta = {
         "model": MODEL_NAME,
@@ -364,15 +366,30 @@ def try_resume(model, args):
         return 0, 0, 0, False
 
     state = torch.load(src, map_location="cpu")
-    if isinstance(state, dict) and "model" in state:
+    if not (isinstance(state, dict) and "model" in state):
+        print("[resume] checkpoint has no model key, training from scratch", flush=True)
+        return 0, 0, 0, False
+
+    ckpt_d = int(state.get("d_model", 0))
+    if ckpt_d and ckpt_d != args.d_model:
+        print(f"[resume] d_model mismatch: ckpt={ckpt_d} current={args.d_model}, training from scratch", flush=True)
+        return 0, 0, 0, False
+
+    ckpt_le = state.get("layer_experts")
+    if ckpt_le and list(ckpt_le) != list(model.layer_experts):
+        print(f"[resume] layer_experts mismatch: ckpt={ckpt_le} current={model.layer_experts}, training from scratch", flush=True)
+        return 0, 0, 0, False
+
+    try:
         missing, unexpected = model.load_state_dict(state["model"], strict=False)
         print(f"[resume] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
-        gs = int(state.get("global_step", 0))
-        ep = int(state.get("completed_epochs", 0))
-        es = int(state.get("epoch_step", 0))
-    else:
-        model.load_state_dict(state, strict=False)
-        gs, ep, es = 0, 0, 0
+    except RuntimeError as e:
+        print(f"[resume] shape mismatch, training from scratch: {e}", flush=True)
+        return 0, 0, 0, False
+
+    gs = int(state.get("global_step", 0))
+    ep = int(state.get("completed_epochs", 0))
+    es = int(state.get("epoch_step", 0))
 
     src_meta = os.path.join(os.path.dirname(src), "meta.json")
     src_stage = None

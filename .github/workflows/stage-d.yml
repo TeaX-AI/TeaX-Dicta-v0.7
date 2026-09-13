@@ -60,11 +60,9 @@ jobs:
           fi
           python train.py \
             --stage stage_d \
-            --dataset teknium/OpenHermes-2.5 \
+            --dataset r0b0tlab/deepseek-hermes-reasoning-traces \
             --output_dir ./outputs/teax-dicta-v0.7/stage_d \
-            --epochs 2 \
             --max_minutes 320 \
-            --max_samples 0 \
             $EXTRA
 
       - name: Upload checkpoint

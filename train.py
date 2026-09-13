@@ -41,7 +41,7 @@ class SharedTrunk(nn.Module):
 
 class HierarchicalDictLayer(nn.Module):
     def __init__(self, d, n_experts, n_parents=None, children_per_parent=2,
-                 hidden_mult=4, top_k=2, trunk_blocks=2):
+                 hidden_mult=3, top_k=2, trunk_blocks=2):
         super().__init__()
         self.d = d
         self.n_experts = n_experts
@@ -160,9 +160,9 @@ class HierarchicalDictLayer(nn.Module):
 
 
 class TeaXDictaV07(nn.Module):
-    def __init__(self, vocab_size, d=512, layer_experts=(16, 32, 64),
-                 children_per_parent=2, hidden_mult=4, top_k=2,
-                 max_seq_len=256, trunk_blocks=2):
+    def __init__(self, vocab_size, d=640, layer_experts=(12, 24, 48),
+                 children_per_parent=2, hidden_mult=3, top_k=2,
+                 max_seq_len=192, trunk_blocks=2):
         super().__init__()
         self.layer_experts = list(layer_experts)
         self.children_per_parent = children_per_parent
@@ -288,19 +288,20 @@ def get_args():
     p.add_argument("--output_dir", required=True)
     p.add_argument("--resume_from", default="")
     p.add_argument("--epochs", type=int, default=2)
-    p.add_argument("--seq_len", type=int, default=256)
+    p.add_argument("--seq_len", type=int, default=192)
     p.add_argument("--bsz", type=int, default=8)
     p.add_argument("--grad_accum", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
+    p.add_argument("--warmup_max", type=int, default=2000)
     p.add_argument("--aux_weight", type=float, default=0.5)
     p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--max_minutes", type=int, default=0)
-    p.add_argument("--d_model", type=int, default=512)
-    p.add_argument("--layer_experts", type=str, default="16,32,64")
+    p.add_argument("--d_model", type=int, default=640)
+    p.add_argument("--layer_experts", type=str, default="12,24,48")
     p.add_argument("--children_per_parent", type=int, default=2)
-    p.add_argument("--hidden_mult", type=int, default=4)
+    p.add_argument("--hidden_mult", type=int, default=3)
     p.add_argument("--top_k", type=int, default=2)
     p.add_argument("--tokenizer", default="gpt2")
     p.add_argument("--log_every", type=int, default=10)
@@ -375,6 +376,9 @@ def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
         "stage": args.stage,
         "d_model": args.d_model,
         "layer_experts": list(model.layer_experts),
+        "hidden_mult": args.hidden_mult,
+        "children_per_parent": args.children_per_parent,
+        "top_k": args.top_k,
     }, path)
     meta = {
         "model": MODEL_NAME,
@@ -387,6 +391,8 @@ def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
         "d_model": args.d_model,
         "layer_experts": list(model.layer_experts),
         "children_per_parent": model.children_per_parent,
+        "hidden_mult": args.hidden_mult,
+        "top_k": args.top_k,
         "seq_len": args.seq_len,
         "vocab_size": model.token_emb.num_embeddings,
     }
@@ -400,7 +406,7 @@ def try_resume(model, args):
     if not src or not os.path.isfile(src):
         return 0, 0, 0, False
 
-    state = torch.load(src, map_location="cpu")
+    state = torch.load(src, map_location="cpu", weights_only=False)
     if not (isinstance(state, dict) and "model" in state):
         print("[resume] checkpoint has no model key, training from scratch", flush=True)
         return 0, 0, 0, False
@@ -466,6 +472,7 @@ def main():
     steps_per_epoch = len(probe)
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = max(int(total_steps * args.warmup_ratio), 1)
+    warmup_steps = min(warmup_steps, args.warmup_max)
     print(f"[plan] steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} warmup={warmup_steps}", flush=True)
 
     layer_experts = parse_int_tuple(args.layer_experts)

@@ -60,11 +60,9 @@ jobs:
           fi
           python train.py \
             --stage stage_c \
-            --dataset m-a-p/CodeFeedback-Filtered-Instruction \
+            --dataset microsoft/NextCoderDataset \
             --output_dir ./outputs/teax-dicta-v0.7/stage_c \
-            --epochs 2 \
             --max_minutes 320 \
-            --max_samples 0 \
             $EXTRA
 
       - name: Upload checkpoint

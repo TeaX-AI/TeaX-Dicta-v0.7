@@ -56,9 +56,7 @@ jobs:
             --stage stage_a \
             --dataset roneneldan/TinyStories \
             --output_dir ./outputs/teax-dicta-v0.7/stage_a \
-            --epochs 2 \
             --max_minutes 320 \
-            --max_samples 0 \
             $EXTRA
 
       - name: Upload checkpoint

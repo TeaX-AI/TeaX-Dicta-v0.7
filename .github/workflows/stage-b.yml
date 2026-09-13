@@ -62,9 +62,7 @@ jobs:
             --stage stage_b \
             --dataset anon8231489123/ShareGPT_Vicuna_unfiltered \
             --output_dir ./outputs/teax-dicta-v0.7/stage_b \
-            --epochs 2 \
             --max_minutes 320 \
-            --max_samples 0 \
             $EXTRA
 
       - name: Upload checkpoint

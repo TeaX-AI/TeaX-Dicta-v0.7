@@ -73,12 +73,13 @@ class HierarchicalDictLayer(nn.Module):
 
     def forward(self, x, parent_probs=None):
         B, L, D = x.shape
-        x_flat = x.reshape(B * L, D)
+        N = B * L
+        x_flat = x.reshape(N, D)
 
         logits = self.router(x_flat)
 
         if parent_probs is not None and self.child_to_parent is not None:
-            pp = parent_probs.reshape(B * L, -1)
+            pp = parent_probs.reshape(N, -1)
             if self.training:
                 gating = pp
             else:
@@ -90,36 +91,70 @@ class HierarchicalDictLayer(nn.Module):
         topk_weights, topk_indices = torch.topk(probs, k=self.top_k, dim=-1)
         topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-9)
 
-        flat_indices = topk_indices.reshape(-1)
+        flat_experts = topk_indices.reshape(-1)
         flat_weights = topk_weights.reshape(-1)
-        token_ids = torch.arange(B * L, device=x.device).repeat_interleave(self.top_k)
+        token_ids = torch.arange(N, device=x.device).repeat_interleave(self.top_k)
+        total = N * self.top_k
 
-        sorted_experts, sort_order = torch.sort(flat_indices)
+        sorted_experts, sort_order = torch.sort(flat_experts)
         sorted_token_ids = token_ids[sort_order]
         sorted_weights = flat_weights[sort_order]
         sorted_x = x_flat[sorted_token_ids]
 
         expert_counts = torch.bincount(sorted_experts, minlength=self.n_experts)
+        counts_list = expert_counts.tolist()
 
-        sorted_output = torch.zeros_like(sorted_x)
-        offset = 0
-        for e in range(self.n_experts):
-            count = int(expert_counts[e].item())
-            if count == 0:
-                continue
-            expert_tokens = sorted_x[offset:offset + count]
-            h = expert_tokens @ self.W1[e] + self.b1[e]
-            h = F.gelu(h)
-            out = h @ self.W2[e] + self.b2[e]
-            w = sorted_weights[offset:offset + count].unsqueeze(-1)
-            sorted_output[offset:offset + count] = out * w
-            offset += count
+        offsets = [0] * self.n_experts
+        for i in range(1, self.n_experts):
+            offsets[i] = offsets[i - 1] + counts_list[i - 1]
+        offsets_t = torch.tensor(offsets, device=x.device, dtype=torch.long)
 
-        output = torch.zeros(B * L, D, device=x.device)
-        output.index_add_(0, sorted_token_ids, sorted_output)
-        output = output.reshape(B, L, D)
+        arange_t = torch.arange(total, device=x.device)
+        within_slot = arange_t - offsets_t[sorted_experts]
 
-        x = self.trunk(x + output)
+        max_count = max(max(counts_list), 1)
+        avg = max(total // max(self.n_experts, 1), 1)
+        capacity = min(max_count, avg * 4 + 1)
+
+        valid = within_slot < capacity
+        valid_pos = valid.nonzero(as_tuple=True)[0]
+
+        valid_experts = sorted_experts[valid_pos]
+        valid_slots = within_slot[valid_pos]
+        valid_weights = sorted_weights[valid_pos]
+        valid_token_ids = sorted_token_ids[valid_pos]
+        valid_x = sorted_x[valid_pos]
+
+        padded_x = torch.zeros(self.n_experts, capacity, D, device=x.device, dtype=x.dtype)
+        padded_weights = torch.zeros(self.n_experts, capacity, device=x.device, dtype=x.dtype)
+        padded_token_ids = torch.zeros(self.n_experts, capacity, dtype=torch.long, device=x.device)
+        padded_valid = torch.zeros(self.n_experts, capacity, dtype=torch.bool, device=x.device)
+
+        flat_idx = valid_experts * capacity + valid_slots
+        padded_x.view(-1, D).index_copy_(0, flat_idx, valid_x)
+        padded_weights.view(-1).index_copy_(0, flat_idx, valid_weights)
+        padded_token_ids.view(-1).index_copy_(0, flat_idx, valid_token_ids)
+        padded_valid.view(-1).index_fill_(0, flat_idx, True)
+
+        h = torch.bmm(padded_x, self.W1) + self.b1.unsqueeze(1)
+        h = F.gelu(h)
+        out = torch.bmm(h, self.W2) + self.b2.unsqueeze(1)
+
+        out = out * padded_weights.unsqueeze(-1)
+        out = out * padded_valid.unsqueeze(-1).to(out.dtype)
+
+        out_flat = out.reshape(-1, D)
+        token_ids_flat = padded_token_ids.reshape(-1)
+        valid_flat = padded_valid.reshape(-1)
+
+        out_valid = out_flat[valid_flat]
+        token_ids_valid = token_ids_flat[valid_flat]
+
+        result = torch.zeros(N, D, device=x.device, dtype=x.dtype)
+        result.index_add_(0, token_ids_valid, out_valid)
+        result = result.reshape(B, L, D)
+
+        x = self.trunk(x + result)
         probs = probs.reshape(B, L, self.n_experts)
         return x, probs
 
@@ -414,9 +449,11 @@ def main():
     args = load_config_overrides(args)
 
     torch.manual_seed(args.seed)
-    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "4")))
+    cpu_count = os.cpu_count() or 4
+    env_threads = int(os.environ.get("OMP_NUM_THREADS", cpu_count))
+    torch.set_num_threads(min(env_threads, cpu_count))
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"[env] {MODEL_NAME} torch={torch.__version__} threads={torch.get_num_threads()}", flush=True)
+    print(f"[env] {MODEL_NAME} torch={torch.__version__} cpus={cpu_count} threads={torch.get_num_threads()}", flush=True)
     print(f"[args] {vars(args)}", flush=True)
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)

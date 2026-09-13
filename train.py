@@ -81,6 +81,16 @@ class TeaXDictaV07(nn.Module):
         self.lm_head = nn.Linear(d, vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, std=0.02)
+
     def _balance_loss(self, probs):
         B, L, E = probs.shape
         flat = probs.reshape(-1, E)
@@ -171,15 +181,16 @@ def get_args():
     p.add_argument("--config", default="")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--resume_from", default="")
-    p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--epochs", type=int, default=2)
     p.add_argument("--seq_len", type=int, default=256)
     p.add_argument("--bsz", type=int, default=8)
     p.add_argument("--grad_accum", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
-    p.add_argument("--aux_weight", type=float, default=0.01)
-    p.add_argument("--max_samples", type=int, default=200000)
+    p.add_argument("--aux_weight", type=float, default=0.1)
+    p.add_argument("--max_samples", type=int, default=20000)
+    p.add_argument("--max_minutes", type=int, default=0)
     p.add_argument("--d_model", type=int, default=256)
     p.add_argument("--n_layers", type=int, default=2)
     p.add_argument("--n_experts", type=int, default=8)
@@ -213,12 +224,12 @@ def lr_at(step, base_lr, warmup, total):
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-def save_ckpt(model, opt, args, epoch, epoch_step, global_step):
+def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
     path = os.path.join(args.output_dir, "model.pt")
     torch.save({
         "model": model.state_dict(),
         "optimizer": opt.state_dict(),
-        "epoch": epoch,
+        "completed_epochs": completed_epochs,
         "epoch_step": epoch_step,
         "global_step": global_step,
         "stage": args.stage,
@@ -226,11 +237,11 @@ def save_ckpt(model, opt, args, epoch, epoch_step, global_step):
     meta = {
         "model": MODEL_NAME,
         "stage": args.stage,
-        "epoch": epoch,
+        "completed_epochs": completed_epochs,
         "epoch_step": epoch_step,
         "global_step": global_step,
         "epochs": args.epochs,
-        "complete": epoch >= args.epochs,
+        "complete": completed_epochs >= args.epochs,
         "d_model": args.d_model,
         "n_layers": args.n_layers,
         "n_experts": args.n_experts,
@@ -239,43 +250,40 @@ def save_ckpt(model, opt, args, epoch, epoch_step, global_step):
     }
     with open(os.path.join(args.output_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"[ckpt] stage={args.stage} epoch={epoch} epoch_step={epoch_step} global={global_step}", flush=True)
+    print(f"[ckpt] stage={args.stage} epoch={completed_epochs} epoch_step={epoch_step} global={global_step}", flush=True)
 
 
 def try_resume(model, args):
-    own_ckpt = os.path.join(args.output_dir, "model.pt")
-    own_meta = os.path.join(args.output_dir, "meta.json")
+    src = args.resume_from
+    if not src or not os.path.isfile(src):
+        return 0, 0, 0, False
 
-    if os.path.isfile(own_ckpt) and os.path.isfile(own_meta):
+    state = torch.load(src, map_location="cpu")
+    if isinstance(state, dict) and "model" in state:
+        model.load_state_dict(state["model"], strict=False)
+        gs = int(state.get("global_step", 0))
+        ep = int(state.get("completed_epochs", 0))
+        es = int(state.get("epoch_step", 0))
+    else:
+        model.load_state_dict(state, strict=False)
+        gs, ep, es = 0, 0, 0
+
+    src_meta = os.path.join(os.path.dirname(src), "meta.json")
+    src_stage = None
+    if os.path.isfile(src_meta):
         try:
-            meta = json.load(open(own_meta))
-            if meta.get("stage") == args.stage:
-                state = torch.load(own_ckpt, map_location="cpu")
-                if isinstance(state, dict) and "model" in state:
-                    model.load_state_dict(state["model"])
-                    ep = int(state.get("epoch", 0))
-                    es = int(state.get("epoch_step", 0))
-                    gs = int(state.get("global_step", 0))
-                else:
-                    model.load_state_dict(state, strict=False)
-                    ep, es, gs = 0, 0, 0
-                print(f"[resume-self] epoch={ep} epoch_step={es} global={gs}", flush=True)
-                return ep, es, gs, ep >= args.epochs
-        except Exception as e:
-            print(f"[resume-self] failed: {e}", flush=True)
+            meta = json.load(open(src_meta))
+            src_stage = meta.get("stage")
+            gs = int(meta.get("global_step", gs))
+        except Exception:
+            pass
 
-    if args.resume_from and os.path.isfile(args.resume_from):
-        state = torch.load(args.resume_from, map_location="cpu")
-        if isinstance(state, dict) and "model" in state:
-            model.load_state_dict(state["model"], strict=False)
-            gs = int(state.get("global_step", 0))
-        else:
-            model.load_state_dict(state, strict=False)
-            gs = 0
-        print(f"[resume-from] {args.resume_from} global={gs}", flush=True)
+    if src_stage == args.stage:
+        print(f"[resume-same] epoch={ep} epoch_step={es} global={gs}", flush=True)
+        return ep, es, gs, ep >= args.epochs
+    else:
+        print(f"[resume-cross] from={src_stage} global={gs}", flush=True)
         return 0, 0, gs, False
-
-    return 0, 0, 0, False
 
 
 def main():
@@ -318,11 +326,11 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     micro = 0
     t0 = time.time()
+    train_start = time.time()
     running_loss = 0.0
     running_aux = 0.0
 
     for epoch in range(start_epoch, args.epochs):
-        # 如果从中间 epoch 恢复，跳过已完成的 batch
         skip = start_epoch_step if epoch == start_epoch else 0
         epoch_step = skip
 
@@ -330,6 +338,11 @@ def main():
             if skip > 0:
                 skip -= 1
                 continue
+
+            if args.max_minutes > 0 and (time.time() - train_start) > args.max_minutes * 60:
+                print(f"[soft-stop] {args.max_minutes} minutes elapsed, saving checkpoint", flush=True)
+                save_ckpt(model, opt, args, epoch, epoch_step, global_step)
+                return
 
             _, loss, aux = model(batch["input_ids"], labels=batch["labels"])
             total = loss + args.aux_weight * aux
@@ -369,7 +382,6 @@ def main():
                 if epoch_step % args.save_every == 0:
                     save_ckpt(model, opt, args, epoch, epoch_step, global_step)
 
-        # 一个 epoch 结束
         save_ckpt(model, opt, args, epoch + 1, 0, global_step)
         start_epoch_step = 0
 

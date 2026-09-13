@@ -1,0 +1,105 @@
+name: stage-b
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: stage-b
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: actions
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Download previous checkpoint
+        id: ckpt
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          mkdir -p inputs/prev
+          if gh release view ckpt-stage-b > /dev/null 2>&1; then
+            gh release download ckpt-stage-b \
+              --pattern "model.pt" \
+              --pattern "meta.json" \
+              --dir inputs/prev \
+              --clobber
+          elif gh release view ckpt-stage-a > /dev/null 2>&1; then
+            gh release download ckpt-stage-a \
+              --pattern "model.pt" \
+              --pattern "meta.json" \
+              --dir inputs/prev \
+              --clobber
+          fi
+          if [ -f inputs/prev/model.pt ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Train stage-b
+        run: |
+          EXTRA=""
+          if [ "${{ steps.ckpt.outputs.found }}" = "true" ]; then
+            EXTRA="--resume_from ./inputs/prev/model.pt"
+          fi
+          python train.py \
+            --stage stage_b \
+            --dataset anon8231489123/ShareGPT_Vicuna_unfiltered \
+            --output_dir ./outputs/teax-dicta-v0.7/stage_b \
+            --epochs 2 \
+            --max_samples 20000 \
+            --max_minutes 320 \
+            $EXTRA
+
+      - name: Upload checkpoint
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          DIR=./outputs/teax-dicta-v0.7/stage_b
+          if [ ! -f "$DIR/model.pt" ]; then
+            echo "no checkpoint produced"
+            exit 0
+          fi
+          gh release view ckpt-stage-b > /dev/null 2>&1 || \
+            gh release create ckpt-stage-b \
+              --title "stage-b checkpoint" \
+              --notes "auto checkpoint" \
+              --target main
+          gh release upload ckpt-stage-b "$DIR/model.pt" --clobber
+          gh release upload ckpt-stage-b "$DIR/meta.json" --clobber
+
+      - name: Trigger next
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          DIR=./outputs/teax-dicta-v0.7/stage_b
+          DONE="false"
+          if [ -f "$DIR/meta.json" ]; then
+            DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
+          fi
+          if [ "$DONE" = "true" ]; then
+            echo "stage-b complete, triggering stage-c"
+            gh workflow run stage-c.yml --ref main
+          else
+            echo "stage-b incomplete, re-triggering stage-b"
+            gh workflow run stage-b.yml --ref main
+          fi

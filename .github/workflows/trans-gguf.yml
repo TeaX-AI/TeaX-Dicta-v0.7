@@ -10,8 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: actions
-          token: ${{ secrets.PAT_TOKEN }}
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -21,7 +20,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-          pip install --no-cache-dir numpy gguf
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Download stage-d checkpoint
         env:

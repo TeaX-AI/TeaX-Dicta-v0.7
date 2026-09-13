@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import sys
 import time
 import math
 
@@ -147,11 +146,12 @@ def extract_text(example):
     return None
 
 
-def build_dataset(dataset_name, tokenizer, seq_len, max_samples=None):
+def build_dataset(dataset_name, tokenizer, seq_len, max_samples=0):
     print(f"[data] loading {dataset_name} ...", flush=True)
     ds = load_dataset(dataset_name, split="train")
-    if max_samples is not None and len(ds) > max_samples:
+    if max_samples and max_samples > 0 and len(ds) > max_samples:
         ds = ds.select(range(max_samples))
+        print(f"[data] truncated to {max_samples}", flush=True)
     print(f"[data] rows = {len(ds)}", flush=True)
 
     pad_id = tokenizer.pad_token_id
@@ -189,7 +189,7 @@ def get_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
     p.add_argument("--aux_weight", type=float, default=0.1)
-    p.add_argument("--max_samples", type=int, default=20000)
+    p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--max_minutes", type=int, default=0)
     p.add_argument("--d_model", type=int, default=256)
     p.add_argument("--n_layers", type=int, default=2)
@@ -222,6 +222,19 @@ def lr_at(step, base_lr, warmup, total):
         return base_lr * step / max(warmup, 1)
     progress = min(max((step - warmup) / max(total - warmup, 1), 0.0), 1.0)
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
+def make_loader(ds, args, epoch):
+    g = torch.Generator()
+    g.manual_seed(args.seed + epoch)
+    return torch.utils.data.DataLoader(
+        ds,
+        batch_size=args.bsz,
+        shuffle=True,
+        drop_last=True,
+        num_workers=0,
+        generator=g,
+    )
 
 
 def save_ckpt(model, opt, args, completed_epochs, epoch_step, global_step):
@@ -294,16 +307,16 @@ def main():
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "4")))
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"[env] {MODEL_NAME} torch={torch.__version__} threads={torch.get_num_threads()}", flush=True)
+    print(f"[args] {vars(args)}", flush=True)
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     ds = build_dataset(args.dataset, tokenizer, args.seq_len, args.max_samples)
-    loader = torch.utils.data.DataLoader(
-        ds, batch_size=args.bsz, shuffle=True, drop_last=True, num_workers=0
-    )
-    steps_per_epoch = len(loader)
+
+    probe = make_loader(ds, args, epoch=0)
+    steps_per_epoch = len(probe)
     total_steps = steps_per_epoch * args.epochs
     warmup_steps = max(int(total_steps * args.warmup_ratio), 1)
     print(f"[plan] steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} warmup={warmup_steps}", flush=True)
@@ -331,6 +344,7 @@ def main():
     running_aux = 0.0
 
     for epoch in range(start_epoch, args.epochs):
+        loader = make_loader(ds, args, epoch)
         skip = start_epoch_step if epoch == start_epoch else 0
         epoch_step = skip
 

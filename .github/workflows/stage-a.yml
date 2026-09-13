@@ -14,8 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: actions
-          token: ${{ secrets.PAT_TOKEN }}
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -58,8 +57,8 @@ jobs:
             --dataset roneneldan/TinyStories \
             --output_dir ./outputs/teax-dicta-v0.7/stage_a \
             --epochs 2 \
-            --max_samples 20000 \
             --max_minutes 320 \
+            --max_samples 0 \
             $EXTRA
 
       - name: Upload checkpoint
@@ -81,7 +80,7 @@ jobs:
           gh release upload ckpt-stage-a "$DIR/meta.json" --clobber
 
       - name: Trigger next
-        if: always()
+        if: success()
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |

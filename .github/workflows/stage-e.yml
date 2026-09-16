@@ -1,10 +1,10 @@
-name: stage-b
+name: stage-e
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: stage-b
+  group: stage-e
   cancel-in-progress: false
 
 jobs:
@@ -34,10 +34,10 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           mkdir -p inputs/prev
-          if gh release view ckpt-stage-b > /dev/null 2>&1; then
-            TARGET_RELEASE="ckpt-stage-b"
-          elif gh release view ckpt-stage-a > /dev/null 2>&1; then
-            TARGET_RELEASE="ckpt-stage-a"
+          if gh release view ckpt-stage-e > /dev/null 2>&1; then
+            TARGET_RELEASE="ckpt-stage-e"
+          elif gh release view ckpt-stage-d > /dev/null 2>&1; then
+            TARGET_RELEASE="ckpt-stage-d"
           else
             TARGET_RELEASE=""
           fi
@@ -69,7 +69,7 @@ jobs:
             echo "found=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Train stage-b
+      - name: Train stage-e
         run: |
           cd DictionariDev
           EXTRA=""
@@ -77,17 +77,15 @@ jobs:
             EXTRA="--resume_from ../inputs/prev/model.pt"
           fi
           python Train.py \
-            --stage stage_b \
-            --dataset pleisto/wikipedia-cn-20230720-filtered \
-            --output_dir ../outputs/stage_b \
+            --stage stage_e \
+            --dataset r0b0tlab/deepseek-hermes-reasoning-traces \
+            --output_dir ../outputs/stage_e \
             --d_model 640 \
             --level_sizes "7,14,98" \
             --hidden_mult 3 \
             --top_k 2 \
             --epochs 2 \
             --max_minutes 320 \
-            --shared_experts \
-            --freeze_dict \
             $EXTRA
 
       - name: Upload checkpoint
@@ -95,34 +93,34 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/stage_b
+          DIR=./outputs/stage_e
           if [ ! -f "$DIR/model.pt" ]; then
             echo "no checkpoint produced"
             exit 0
           fi
-          gh release view ckpt-stage-b > /dev/null 2>&1 || \
-            gh release create ckpt-stage-b \
-              --title "stage-b checkpoint" \
+          gh release view ckpt-stage-e > /dev/null 2>&1 || \
+            gh release create ckpt-stage-e \
+              --title "stage-e checkpoint" \
               --notes "auto checkpoint" \
               --target ${{ github.ref_name }}
-          gh release upload ckpt-stage-b "$DIR/model.pt" --clobber
-          gh release upload ckpt-stage-b "$DIR/meta.json" --clobber
-          gh release upload ckpt-stage-b "$DIR/dictionari-model.json" --clobber
+          gh release upload ckpt-stage-e "$DIR/model.pt" --clobber
+          gh release upload ckpt-stage-e "$DIR/meta.json" --clobber
+          gh release upload ckpt-stage-e "$DIR/dictionari-model.json" --clobber
 
       - name: Trigger next
         if: success()
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          DIR=./outputs/stage_b
+          DIR=./outputs/stage_e
           DONE="false"
           if [ -f "$DIR/meta.json" ]; then
             DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           fi
           if [ "$DONE" = "true" ]; then
-            echo "stage-b complete, triggering stage-c"
-            gh workflow run stage-c.yml --ref ${{ github.ref_name }}
+            echo "stage-e complete, triggering trans-gguf"
+            gh workflow run trans-gguf.yml --ref ${{ github.ref_name }}
           else
-            echo "stage-b incomplete, re-triggering stage-b"
-            gh workflow run stage-b.yml --ref ${{ github.ref_name }}
+            echo "stage-e incomplete, re-triggering stage-e"
+            gh workflow run stage-e.yml --ref ${{ github.ref_name }}
           fi

@@ -78,10 +78,10 @@ jobs:
           fi
           python Train.py \
             --stage stage_d \
-            --dataset r0b0tlab/deepseek-hermes-reasoning-traces \
+            --dataset microsoft/NextCoderDataset \
             --output_dir ../outputs/stage_d \
             --d_model 640 \
-            --layer_experts "12,24,48" \
+            --level_sizes "7,14,98" \
             --hidden_mult 3 \
             --top_k 2 \
             --epochs 2 \
@@ -118,8 +118,8 @@ jobs:
             DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           fi
           if [ "$DONE" = "true" ]; then
-            echo "stage-d complete, triggering trans-gguf"
-            gh workflow run trans-gguf.yml --ref ${{ github.ref_name }}
+            echo "stage-d complete, triggering stage-e"
+            gh workflow run stage-e.yml --ref ${{ github.ref_name }}
           else
             echo "stage-d incomplete, re-triggering stage-d"
             gh workflow run stage-d.yml --ref ${{ github.ref_name }}

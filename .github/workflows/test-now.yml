@@ -1,0 +1,84 @@
+name: test-now
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'release tag 测试'
+        required: false
+        default: 'teax-dicta-v0.7'
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          cd DictionariDev
+          pip install --upgrade pip
+          pip install --no-cache-dir torch
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Download latest release
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="teax-dicta-v0.7"
+          fi
+          mkdir -p ./models
+          echo "[test] downloading from release: $TAG"
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "[error] release $TAG not found"
+            exit 1
+          fi
+          for i in 1 2 3 4 5; do
+            echo "[download] attempt $i/5"
+            if gh release download "$TAG" \
+              --pattern "*.gguf" \
+              --dir ./models \
+              --clobber; then
+              echo "[download] success"
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "[download] all 5 attempts failed"
+              exit 1
+            fi
+            sleep 15
+          done
+          ls -la ./models/
+          echo "[test] release $TAG downloaded"
+
+      - name: Ask the model "Who are you?"
+        run: |
+          cd DictionariDev
+          GGUF=$(find ../models -name "*.gguf" | head -n 1)
+          if [ -z "$GGUF" ]; then
+            echo "[error] no gguf found in ./models"
+            exit 1
+          fi
+          echo "[test] loading $GGUF"
+          echo "=============================="
+          echo "Prompt: Who are you?"
+          echo "=============================="
+          python DictionariRun.py \
+            --gguf-model "$GGUF" \
+            --systemprompt "" \
+            --chat "Who are you?" \
+            --max-new-tokens 128 \
+            --temperature 0.7 \
+            --top-k 50 \
+            --top-p 0.9
+          echo "=============================="

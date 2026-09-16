@@ -71,14 +71,17 @@ jobs:
           fi
           python Train.py \
             --stage stage_a \
-            --dataset roneneldan/TinyStories \
+            --dataset wikimedia/wikipedia \
+            --dataset_config 20231101.en \
             --output_dir ../outputs/stage_a \
             --d_model 640 \
-            --layer_experts "12,24,48" \
+            --level_sizes "7,14,98" \
             --hidden_mult 3 \
             --top_k 2 \
             --epochs 2 \
             --max_minutes 320 \
+            --shared_experts \
+            --freeze_dict \
             $EXTRA
 
       - name: Upload checkpoint

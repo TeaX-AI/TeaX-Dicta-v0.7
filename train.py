@@ -527,6 +527,8 @@ def try_resume(model, args):
                 es = int(state.get("epoch_step", 0))
                 print(f"[resume-self] epoch={ep} epoch_step={es} global={gs}", flush=True)
                 return ep, es, gs, ep >= args.epochs
+            else:
+                print(f"[resume-self] stage mismatch: ckpt={meta.get('stage')} current={args.stage}, ignoring", flush=True)
         except Exception as e:
             print(f"[resume-self] failed: {e}", flush=True)
 
@@ -534,12 +536,26 @@ def try_resume(model, args):
         state = torch.load(args.resume_from, map_location="cpu", weights_only=False)
         if isinstance(state, dict) and "model" in state:
             model.load_state_dict(state["model"], strict=False)
-            gs = int(state.get("global_step", 0))
         else:
             model.load_state_dict(state, strict=False)
-            gs = 0
-        print(f"[resume-from] {args.resume_from} global={gs}", flush=True)
-        return 0, 0, gs, False
+
+        src_meta_path = os.path.join(os.path.dirname(args.resume_from), "meta.json")
+        src_stage = None
+        src_gs = 0
+        if os.path.isfile(src_meta_path):
+            try:
+                src_meta = json.load(open(src_meta_path))
+                src_stage = src_meta.get("stage")
+                src_gs = int(src_meta.get("global_step", 0))
+            except Exception:
+                pass
+
+        if src_stage == args.stage:
+            print(f"[resume-from] same stage {src_stage}, inheriting global={src_gs}", flush=True)
+            return 0, 0, src_gs, False
+        else:
+            print(f"[resume-from] stage changed: {src_stage} -> {args.stage}, weights loaded, step reset to 0", flush=True)
+            return 0, 0, 0, False
 
     return 0, 0, 0, False
 

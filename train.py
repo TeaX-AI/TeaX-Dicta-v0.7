@@ -92,7 +92,7 @@ class DictionariModel(nn.Module):
         self.routers.append(nn.ModuleList([root_router]))
 
         prev_size = self.level_sizes[0]
-        for i in range(1, len(self.level_sizes) - 1):
+        for i in range(1, len(self.level_sizes)):
             cur_size = self.level_sizes[i]
             assert cur_size % prev_size == 0, (
                 f"level_sizes 必须整除：{cur_size} / {prev_size} 不是整数"
@@ -258,11 +258,11 @@ class DictionariModel(nn.Module):
 
 
 def classify_param(name):
-    if ".routers." in name:
+    if "routers." in name:
         return "dict"
-    if ".trunk." in name:
+    if "trunk." in name:
         return "trunk"
-    if ".experts." in name:
+    if "experts." in name:
         return "expert"
     return "model"
 

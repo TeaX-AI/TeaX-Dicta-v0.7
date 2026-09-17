@@ -213,7 +213,6 @@ class DictionariModel(nn.Module):
             valid_x = sorted_x[valid_pos]
 
             D = x_flat.size(1)
-            hidden = D * self.hidden_mult
 
             padded_x = torch.zeros(self.n_experts, capacity, D, device=x.device, dtype=x.dtype)
             padded_weights = torch.zeros(self.n_experts, capacity, device=x.device, dtype=x.dtype)
@@ -569,7 +568,7 @@ def get_args():
     p.add_argument("--warmup_max", type=int, default=2000)
     p.add_argument("--aux_weight", type=float, default=0.5)
     p.add_argument("--max_samples", type=int, default=0)
-    p.add_argument("--max_minutes", type=int, default=0)
+    p.add_argument("--max_minutes", type=int, default=280)
 
     p.add_argument("--shared_experts", action="store_true")
     p.add_argument("--freeze_dict", action="store_true")
@@ -598,6 +597,8 @@ def get_args():
 
 def main():
     args = get_args()
+
+    train_start = time.time()
 
     torch.manual_seed(args.seed)
     cpu_count = os.cpu_count() or 4
@@ -713,7 +714,6 @@ def main():
 
     micro = 0
     t0 = time.time()
-    train_start = time.time()
     running_loss = 0.0
     running_aux = 0.0
 

@@ -79,7 +79,6 @@ jobs:
             --hidden_mult 3 \
             --top_k 2 \
             --epochs 2 \
-            --max_minutes 320 \
             --shared_experts \
             --freeze_dict \
             $EXTRA
@@ -104,15 +103,18 @@ jobs:
           gh release upload ckpt-stage-a "$DIR/dictionari-model.json" --clobber
 
       - name: Trigger next
-        if: success()
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          STATUS="${{ job.status }}"
+          echo "[trigger] job status: $STATUS"
           DIR=./outputs/stage_a
-          DONE="false"
-          if [ -f "$DIR/meta.json" ]; then
-            DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
+          if [ ! -f "$DIR/meta.json" ]; then
+            echo "[skip] no meta.json produced, not re-triggering"
+            exit 0
           fi
+          DONE=$(python -c "import json; print(str(json.load(open('$DIR/meta.json')).get('complete', False)).lower())")
           if [ "$DONE" = "true" ]; then
             echo "stage-a complete, triggering stage-b"
             gh workflow run stage-b.yml --ref ${{ github.ref_name }}

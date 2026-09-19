@@ -16,11 +16,14 @@ ROLES_FORMAT = "teax-dicta-model-roles"
 
 
 class CausalMix(nn.Module):
-    def __init__(self, d, kernel_size=5):
+    def __init__(self, d, kernel_size=5, dilation=1):
         super().__init__()
-        self.conv = nn.Conv1d(d, d, kernel_size, groups=d, padding=kernel_size - 1)
+        self.conv = nn.Conv1d(d, d, kernel_size, groups=d,
+                              padding=(kernel_size - 1) * dilation,
+                              dilation=dilation)
         self.gate = nn.Linear(d, d)
         self.kernel_size = kernel_size
+        self.dilation = dilation
 
     def forward(self, x):
         y = x.transpose(1, 2)
@@ -33,7 +36,9 @@ class CausalMix(nn.Module):
 class SharedTrunk(nn.Module):
     def __init__(self, d, n_blocks=2):
         super().__init__()
-        self.blocks = nn.ModuleList([CausalMix(d) for _ in range(n_blocks)])
+        self.blocks = nn.ModuleList([
+            CausalMix(d, dilation=2 ** i) for i in range(n_blocks)
+        ])
 
     def forward(self, x):
         for b in self.blocks:
@@ -95,7 +100,7 @@ class DictionariModel(nn.Module):
         for i in range(1, len(self.level_sizes)):
             cur_size = self.level_sizes[i]
             assert cur_size % prev_size == 0, (
-                f"level_sizes 必须整除：{cur_size} / {prev_size} 不是整数"
+                f"level_sizes must divide evenly: {cur_size} / {prev_size}"
             )
             per_parent = cur_size // prev_size
             routers = nn.ModuleList([
@@ -341,9 +346,41 @@ def expand_shared_experts(state_dict, model):
     return new_sd
 
 
+def load_with_pos_patch(model, state_dict):
+    if not isinstance(state_dict, dict):
+        return model.load_state_dict(state_dict, strict=False)
+
+    old_pos = state_dict.get("pos_emb.weight")
+    if old_pos is None:
+        return model.load_state_dict(state_dict, strict=False)
+
+    new_pos = model.pos_emb.weight
+    if old_pos.shape == new_pos.shape:
+        return model.load_state_dict(state_dict, strict=False)
+
+    old_len = old_pos.shape[0]
+    new_len = new_pos.shape[0]
+    copy_len = min(old_len, new_len)
+
+    merged = new_pos.data.clone()
+    merged[:copy_len] = old_pos[:copy_len]
+
+    sd = dict(state_dict)
+    sd["pos_emb.weight"] = merged
+
+    print(f"[pos-patch] pos_emb {old_len} -> {new_len}, first {copy_len} rows copied, "
+          f"remaining {new_len - copy_len} rows fresh", flush=True)
+
+    return model.load_state_dict(sd, strict=False)
+
+
 def extract_text(example):
+    if "content" in example and isinstance(example["content"], str) and example["content"]:
+        return example["content"]
     if "text" in example and isinstance(example["text"], str) and example["text"]:
         return example["text"]
+    if "src" in example and isinstance(example["src"], str) and example["src"]:
+        return example["src"]
     if "conversations" in example and example["conversations"]:
         return "".join(
             f"<|{t.get('from', t.get('role', 'user'))}|>{t.get('value', t.get('content', ''))}"
@@ -355,7 +392,7 @@ def extract_text(example):
         return f"<|user|>{example['instruction']}<|assistant|>{example['output']}"
     if "prompt" in example and "response" in example:
         return f"<|user|>{example['prompt']}<|assistant|>{example['response']}"
-    for k in ["content", "input", "question"]:
+    for k in ["input", "question"]:
         if k in example and isinstance(example[k], str) and example[k]:
             return example[k]
     return None
@@ -501,7 +538,8 @@ def try_resume(model, args):
                 state = torch.load(own_ckpt, map_location="cpu", weights_only=False)
                 sd = state["model"]
                 sd = expand_shared_experts(sd, model)
-                model.load_state_dict(sd, strict=False)
+                missing, unexpected = load_with_pos_patch(model, sd)
+                print(f"[resume-self] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
                 gs = int(state.get("global_step", 0))
                 ep = int(state.get("completed_epochs", 0))
                 es = int(state.get("epoch_step", 0))
@@ -517,7 +555,8 @@ def try_resume(model, args):
         if isinstance(state, dict) and "model" in state:
             sd = state["model"]
             sd = expand_shared_experts(sd, model)
-            model.load_state_dict(sd, strict=False)
+            missing, unexpected = load_with_pos_patch(model, sd)
+            print(f"[resume-from] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
         else:
             model.load_state_dict(state, strict=False)
 
@@ -662,11 +701,11 @@ def main():
     )
 
     if args.init_from_dim:
-        missing, unexpected = model.load_state_dict(dim["model"], strict=False)
+        missing, unexpected = load_with_pos_patch(model, dim["model"])
         print(f"[init] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
 
     elif args.resume_from and args.resume_from.endswith(".dim"):
-        missing, unexpected = model.load_state_dict(dim["model"], strict=False)
+        missing, unexpected = load_with_pos_patch(model, dim["model"])
         print(f"[init] missing={len(missing)} unexpected={len(unexpected)}", flush=True)
 
     if arch is None:

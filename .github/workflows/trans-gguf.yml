@@ -23,14 +23,14 @@ jobs:
           pip install --no-cache-dir torch
           pip install --no-cache-dir numpy gguf
 
-      - name: Download stage-e checkpoint
+      - name: Download stage-f checkpoint
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           mkdir -p inputs/stage_e
           for i in 1 2 3 4 5; do
             echo "[download] attempt $i/5"
-            if gh release download ckpt-stage-e \
+            if gh release download ckpt-stage-f \
               --pattern "model.pt" \
               --pattern "meta.json" \
               --dir inputs/stage_e \
@@ -71,7 +71,7 @@ jobs:
           gh release view "$TAG" > /dev/null 2>&1 || \
             gh release create "$TAG" \
               --title "TeaX-Dicta v0.7" \
-              --notes "Auto-built release from stage-e checkpoint." \
+              --notes "Auto-built release from stage-f checkpoint." \
               --target ${{ github.ref_name }}
           gh release upload "$TAG" teax-dicta-v0.7.dim --clobber
           gh release upload "$TAG" teax-dicta-v0.7.gguf --clobber

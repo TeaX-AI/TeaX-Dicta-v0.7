@@ -3,15 +3,20 @@ name: test-now
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'release tag 测试'
-        required: false
-        default: 'teax-dicta-v0.7'
+      format:
+        description: 'test which format'
+        required: true
+        default: 'dim'
+        type: choice
+        options:
+          - dim
+          - gguf
+          - pt
 
 jobs:
   test:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,61 +26,83 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: run/requirements.txt
 
       - name: Install deps
         run: |
-          cd DictionariDev
+          cd run
           pip install --upgrade pip
           pip install --no-cache-dir torch
           pip install --no-cache-dir -r requirements.txt
 
-      - name: Download latest release
+      - name: Download and test
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          FORMAT: ${{ github.event.inputs.format }}
         run: |
-          TAG="${{ github.event.inputs.release_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="teax-dicta-v0.7"
-          fi
-          mkdir -p ./models
-          echo "[test] downloading from release: $TAG"
-          if ! gh release view "$TAG" > /dev/null 2>&1; then
-            echo "[error] release $TAG not found"
+          if [ "$FORMAT" = "pt" ]; then
+            RELEASE="ckpt-stage-f"
+            PATTERN="model.pt"
+          elif [ "$FORMAT" = "dim" ]; then
+            RELEASE="teax-dicta-v0.7"
+            PATTERN="*.dim"
+          elif [ "$FORMAT" = "gguf" ]; then
+            RELEASE="teax-dicta-v0.7"
+            PATTERN="*.gguf"
+          else
+            echo "[error] unknown format: $FORMAT"
             exit 1
           fi
+
+          echo "[test] format=$FORMAT release=$RELEASE pattern=$PATTERN"
+
+          if ! gh release view "$RELEASE" > /dev/null 2>&1; then
+            echo "[error] release $RELEASE not found"
+            exit 1
+          fi
+
+          ok=0
           for i in 1 2 3 4 5; do
             echo "[download] attempt $i/5"
-            if gh release download "$TAG" \
-              --pattern "*.gguf" \
-              --dir ./models \
+            if gh release download "$RELEASE" \
+              --pattern "$PATTERN" \
+              --dir run \
               --clobber; then
-              echo "[download] success"
+              ok=1
               break
             fi
             if [ "$i" -eq 5 ]; then
               echo "[download] all 5 attempts failed"
               exit 1
             fi
+            echo "[download] failed, waiting 15s before retry"
             sleep 15
           done
-          ls -la ./models/
-          echo "[test] release $TAG downloaded"
 
-      - name: Ask the model "Who are you?"
-        run: |
-          cd DictionariDev
-          GGUF=$(find ../models -name "*.gguf" | head -n 1)
-          if [ -z "$GGUF" ]; then
-            echo "[error] no gguf found in ./models"
+          ls -la run/
+
+          if [ "$FORMAT" = "pt" ]; then
+            MODEL="run/model.pt"
+          elif [ "$FORMAT" = "dim" ]; then
+            MODEL=$(find run -maxdepth 1 -name "*.dim" | head -n 1)
+          elif [ "$FORMAT" = "gguf" ]; then
+            MODEL=$(find run -maxdepth 1 -name "*.gguf" | head -n 1)
+          fi
+
+          if [ -z "$MODEL" ] || [ ! -f "$MODEL" ]; then
+            echo "[error] model file not found after download"
             exit 1
           fi
-          echo "[test] loading $GGUF"
+
+          echo "[test] loading $MODEL"
           echo "=============================="
           echo "Prompt: Who are you?"
           echo "=============================="
+
+          cd run
           python DictionariRun.py \
-            --gguf-model "$GGUF" \
-            --systemprompt "" \
+            --model "$(basename "$MODEL")" \
+            --systemprompt system.prompt \
             --chat "Who are you?" \
             --max-new-tokens 128 \
             --temperature 0.7 \

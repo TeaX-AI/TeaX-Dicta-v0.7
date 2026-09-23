@@ -99,9 +99,6 @@ class DictionariModel(nn.Module):
         prev_size = self.level_sizes[0]
         for i in range(1, len(self.level_sizes)):
             cur_size = self.level_sizes[i]
-            assert cur_size % prev_size == 0, (
-                f"level_sizes must divide evenly: {cur_size} / {prev_size}"
-            )
             per_parent = cur_size // prev_size
             routers = nn.ModuleList([
                 DictionaryRouter(d, per_parent, hidden_mult=1)
@@ -160,13 +157,6 @@ class DictionariModel(nn.Module):
 
         return probs
 
-    def balance_loss(self, probs):
-        B, E = probs.shape
-        p = probs.mean(dim=0)
-        idx = probs.argmax(dim=-1)
-        f = torch.bincount(idx, minlength=E).float() / idx.numel()
-        return E * (f * p).sum()
-
     def forward(self, input_ids, labels=None):
         B, L = input_ids.shape
         N = B * L
@@ -175,7 +165,6 @@ class DictionariModel(nn.Module):
         x_flat = x.reshape(N, -1)
 
         probs = self.route(x_flat)
-        aux = self.balance_loss(probs)
 
         if self.shared_experts:
             expert_out = self.experts[0](x_flat)
@@ -266,7 +255,7 @@ class DictionariModel(nn.Module):
                 ignore_index=-100,
             )
 
-        return logits, loss, aux
+        return logits, loss
 
 
 def classify_param(name):
@@ -605,7 +594,6 @@ def get_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
     p.add_argument("--warmup_max", type=int, default=2000)
-    p.add_argument("--aux_weight", type=float, default=0.5)
     p.add_argument("--max_samples", type=int, default=0)
     p.add_argument("--max_minutes", type=int, default=280)
 
@@ -754,7 +742,6 @@ def main():
     micro = 0
     t0 = time.time()
     running_loss = 0.0
-    running_aux = 0.0
 
     for epoch in range(start_epoch, args.epochs):
         loader = make_loader(ds, args, epoch)
@@ -774,9 +761,8 @@ def main():
             input_ids = batch["input_ids"].to(args.device)
             labels = batch["labels"].to(args.device)
 
-            _, loss, aux = model(input_ids, labels=labels)
+            _, loss = model(input_ids, labels=labels)
             loss_val = loss.item()
-            aux_val = aux.item()
 
             if loss_val <= args.lr_drop_target:
                 hit_target = True
@@ -802,11 +788,9 @@ def main():
                         )
                     smooth_steps = 0
 
-            total = loss + args.aux_weight * aux
-            (total / args.grad_accum).backward()
+            (loss / args.grad_accum).backward()
             micro += 1
             running_loss += loss_val
-            running_aux += aux_val
 
             if micro % args.grad_accum == 0:
                 base_lr = lr_at(global_step, args.lr, warmup_steps, total_steps)
@@ -831,12 +815,10 @@ def main():
                         f"step={epoch_step}/{steps_per_epoch} "
                         f"global={global_step}/{total_steps} "
                         f"loss={running_loss/args.log_every:.4f} "
-                        f"aux={running_aux/args.log_every:.4f} "
                         f"lr={lr:.2e} scale={lr_scale:.3f} tok/s={tok_per_s:.0f}",
                         flush=True,
                     )
                     running_loss = 0.0
-                    running_aux = 0.0
                     t0 = time.time()
 
                 if epoch_step % args.save_every == 0:
